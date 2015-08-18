@@ -1,0 +1,20 @@
+<canvas width="100" height="100"></canvas>
+<script>
+    var canvas = document.querySelector('canvas');
+    var context = canvas.getContext('2d');
+    context.lineWidth = 2;
+    var data = [{scale: 0.25, color: 'red'}, {scale: 0.35, color: 'blue'}, {scale: 0.15, color: 'green'}, {scale: 0.20, color: '#888'}, {scale: 0.05, color: '#fff'}];
+
+    var start = 0;
+    for (i = 0; i < data.length; i++) {
+        var end = start + data[i].scale;
+        context.beginPath();
+        context.moveTo(50, 50);
+        context.arc(50, 50, 40, 2 * Math.PI * start, 2 * Math.PI * end, false);
+        context.strokeStyle = data[i].color;
+        context.fillStyle = data[i].color;
+        context.fill();
+        //context.stroke();
+        start = end;                        
+    }
+</script>

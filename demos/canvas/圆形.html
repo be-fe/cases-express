@@ -1,0 +1,31 @@
+<canvas></canvas>
+<script>
+    /**
+     * context.arc(centerPointX, centerPointY, radius, startintAngle, endingAngle, antiClockwise);
+     *
+     * @param {Number} centerPointX 圆心坐标X
+     * @param {Number} centerPointY 圆心坐标Y
+     * @param {Number} radius 半径
+     * @param {Number} startintAngle 起始弧度
+     * @param {Number} endingAngle 结束弧度
+     * @param {Boolean} antiClockwise 是否逆时针旋转(默认:false)
+     */
+
+    var canvas = document.querySelector('canvas');
+    canvas.width = 300;
+    canvas.height = 300;
+    var context = canvas.getContext('2d');
+    var center = {
+        'x' : canvas.width / 2,
+        'y' : canvas.height / 2
+    };
+    context.beginPath();
+    // 绘制圆路径，圆心为画布中心，半径100，起始点为45°，结束点为341°，顺时针旋转。
+    context.arc(center.x, center.y, 100, 2 * Math.PI * (45 / 360), 2 * Math.PI * (405 / 360), false);
+    // 轮廓(线)宽2像素
+    context.lineWidth = 2;
+    // 轮廓(线)填充为#FFF白色
+    context.strokeStyle = "#333";
+    // 绘制轮廓(线)
+    context.stroke();
+</script>

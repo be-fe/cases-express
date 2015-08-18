@@ -1,0 +1,148 @@
+<html id="html">
+    <head>
+        <meta charset='utf-8'>
+        <meta name="viewport" content="initial-scale=1, maximum-scale=1, user-scalable=no, width=device-width">
+        <meta name="format-detection" content="telephone=no">
+        <meta name="msapplication-tap-highlight" content="no" />
+        <link rel="stylesheet" href="http://apps.bdimg.com/libs/bootstrap/3.3.0/css/bootstrap.css">
+        <link rel="stylesheet" href="libs/simple_pc.css">
+        <script src="libs/iToolkit_pc.js"></script>
+        <style>
+            html, body{
+                height: 100%;
+            }
+            iframe {
+                width: 100%;
+                min-height: 450px;
+                border-radius: 3px;
+                border: 1px solid #e5e5e5;
+            }
+
+            .left-side {
+                height: 100%;
+                overflow-y: auto; 
+            }
+            .handle-bar,
+            .result-area,
+            .source-area {
+                float: left;
+            }
+
+            .handle-bar {
+                width: 3%;
+                height: 100%;
+                cursor: col-resize;
+            }
+
+            .result-area {
+                width: 28%;
+            }
+            .source-area {
+                width: 68%;
+            }
+        </style>
+    </head>
+    <body>
+        <nav class="navbar navbar-default">
+          <div class="container-fluid">
+            <div class="navbar-header">
+              <a class="navbar-brand" href="#">Demos Admin</a>
+            </div>
+          </div>
+        </nav>
+        <div id="content">
+            <div class="col col-xs-2 left-side">
+                <tree></tree>
+            </div>
+            <div class="col col-xs-10">
+                <div class="source-area">
+                    <h5><a href="javascript:void(0);" onclick="reload();">reload</a>源代码：</h5>
+                    <iframe src="" id="sourceCode" name="sourceCode"></iframe>
+                </div>
+                <div class="handle-bar" draggable="true"></div>
+                <div class="result-area">
+                    <h5>执行结果：</h5>
+                    <iframe src="" id="result" name="result"></iframe>
+                </div>
+            </div>
+        </div>
+    </body>
+    <script src="libs/interact-1.2.4.js"></script>
+    <script>
+        var html = document.querySelector('html');
+        var content = document.querySelector('#content')
+        windowHeight = parseInt(window.getComputedStyle(html, null).height.replace('px', ''), 10);
+        content.style.height = (windowHeight - 80) + 'px';
+
+        function reload() {
+            sourceCode.window.location.reload();
+            result.window.location.reload();
+        }
+        utils.httpGet('/fileList', {}, function(data) {
+            var treeOpts = {
+                data: data,
+                root: true,
+                handleData: true,
+                name: 'fileName',
+                onLeftClick: function(item, target) {
+                    var resultFrame = document.querySelector('#result');
+                    var sourceCodeFrame = document.querySelector('#sourceCode');
+                    var resultArea = document.querySelector('.result-area');
+                    var sourceCodeArea = document.querySelector('.source-area');
+                    var handleArea = document.querySelector('.handle-bar');
+                    if (item.path.match(/\.md$/)) {
+                        sourceCodeArea.style.display = 'none';
+                        handleArea.style.display = 'none';
+                        resultArea.style.width = '100%';
+                        resultFrame.src = item.path + '?result=1';
+                    }
+                    else {
+                        sourceCodeArea.style.display = 'block';
+                        handleArea.style.display = 'block';
+                        resultArea.style.width = '28%';
+                        sourceCodeFrame.src = item.path + '?source_code=1';
+                        resultFrame.src = item.path + '?result=1';
+                    }
+                }
+            }
+            riot.mount('tree', treeOpts);
+        });
+
+        (function() {
+            var handler = document.querySelector('.handle-bar');
+            var parent = handler.parentNode;
+            var next = handler.nextElementSibling;
+            var prev = handler.previousElementSibling;
+            var parentWidth;
+            var begin;
+            var beginPosition;
+            var countSatrt = function(e) {
+                begin = true;
+                parentWidth = window.getComputedStyle(parent, null).width.replace('px', '');
+                parentWidth = parseInt(parentWidth, 10);
+                beginPosition = e.offsetX;
+                //next.style.display = 'none';
+            }
+
+            var counting = function(e) {
+                if (begin) {
+                    prevWidth = handler.offsetLeft - 15 + (e.offsetX - beginPosition);
+                    prev.style.width = prevWidth + 'px';
+                    next.style.width = (parentWidth - prevWidth - 100) + 'px'
+                    //beginPosition = e.offsetX;
+                    console.log(prevWidth)
+
+                }
+            }
+
+            var countEnd = function(e) {
+                begin = false;
+                console.log('end');
+            }
+            handler.ondragstart = countSatrt;
+            handler.ondragover = counting;
+            handler.ondragend  = countEnd;
+        })();
+        
+    </script>
+</html>
