@@ -1,25 +1,13 @@
-/* Riot v2.2.1, @license MIT, (c) 2015 Muut Inc. + contributors */
+/* Riot v2.1.0, @license MIT, (c) 2015 Muut Inc. + contributors */
 
 ;(function(window) {
-  'use strict'
-  var riot = { version: 'v2.2.1', settings: {} }
+  // 'use strict' does not allow us to override the events properties https://github.com/muut/riotjs/blob/dev/lib/tag/update.js#L7-L10
+  // it leads to the following error on firefox "setting a property that has only a getter"
+  //'use strict'
 
-  // This globals 'const' helps code size reduction
 
-  // for typeof == '' comparisons
-  var T_STRING = 'string'
-  var T_OBJECT = 'object'
+  var riot = { version: 'v2.1.0', settings: {} }
 
-  // for IE8 and rest of the world
-  var isArray = Array.isArray || (function () {
-    var _ts = Object.prototype.toString
-    return function (v) { return _ts.call(v) === '[object Array]' }
-  })()
-
-  // Version# for IE 8-11, 0 for others
-  var ieVersion = (function (win) {
-    return (win && win.document || {}).documentMode | 0
-  })(window)
 
 riot.observable = function(el) {
 
@@ -29,7 +17,7 @@ riot.observable = function(el) {
       _id = 0
 
   el.on = function(events, fn) {
-    if (isFunction(fn)) {
+    if (typeof fn == 'function') {
       fn._id = typeof fn._id == 'undefined' ? _id++ : fn._id
 
       events.replace(/\S+/g, function(name, pos) {
@@ -90,13 +78,11 @@ riot.observable = function(el) {
 
 }
 riot.mixin = (function() {
-  var mixins = {}
-
+  var registeredMixins = {}
   return function(name, mixin) {
-    if (!mixin) return mixins[name]
-    mixins[name] = mixin
+    if (!mixin) return registeredMixins[name]
+      else registeredMixins[name] = mixin
   }
-
 })()
 
 ;(function(riot, evt, window) {
@@ -203,32 +189,24 @@ tmpl('{ undefined } - { false } - { null } - { 0 }', {})
 */
 
 
-var brackets = (function(orig) {
-
-  var cachedBrackets,
-      r,
-      b,
-      re = /[{}]/g
-
+var brackets = (function(orig, s, b) {
   return function(x) {
 
     // make sure we use the current setting
-    var s = riot.settings.brackets || orig
-
-    // recreate cached vars if needed
-    if (cachedBrackets !== s) {
-      cachedBrackets = s
-      b = s.split(' ')
-      r = b.map(function (e) { return e.replace(/(?=.)/g, '\\') })
-    }
+    s = riot.settings.brackets || orig
+    if (b != s) b = s.split(' ')
 
     // if regexp given, rewrite it with current brackets (only if differ from default)
-    return x instanceof RegExp ? (
-        s === orig ? x :
-        new RegExp(x.source.replace(re, function(b) { return r[~~(b === '}')] }), x.global ? 'g' : '')
-      ) :
+    return x && x.test
+      ? s == orig
+        ? x : RegExp(x.source
+                      .replace(/\{/g, b[0].replace(/(?=.)/g, '\\'))
+                      .replace(/\}/g, b[1].replace(/(?=.)/g, '\\')),
+                    x.global ? 'g' : '')
+
       // else, get specific bracket
-      b[x]
+      : b[x]
+
   }
 })('{ }')
 
@@ -401,13 +379,13 @@ var tmpl = (function() {
     str.replace(re, function(_, open, close, pos) {
 
       // if outer inner bracket, mark position
-      if (!level && open) start = pos
+      if(!level && open) start = pos
 
       // in(de)crease bracket level
       level += open ? 1 : -1
 
       // if outer closing bracket, grab the match
-      if (!level && close != null) matches.push(str.slice(start, pos+close.length))
+      if(!level && close != null) matches.push(str.slice(start, pos+close.length))
 
     })
 
@@ -418,9 +396,17 @@ var tmpl = (function() {
 
 // { key, i in items} -> { key, i, items }
 function loopKeys(expr) {
-  var b0 = brackets(0),
-      els = expr.slice(b0.length).match(/\s*(\S+?)\s*(?:,\s*(\S)+)?\s+in\s+(.+)/)
-  return els ? { key: els[1], pos: els[2], val: b0 + els[3] } : { val: expr }
+  var ret = { val: expr },
+      els = expr.split(/\s+in\s+/)
+
+  if (els[1]) {
+    ret.val = brackets(0) + els[1]
+    els = els[0].slice(brackets(0).length).trim().split(/,\s*/)
+    ret.key = els[0]
+    ret.pos = els[1]
+  }
+
+  return ret
 }
 
 function mkitem(expr, key, val) {
@@ -437,84 +423,146 @@ function _each(dom, parent, expr) {
   remAttr(dom, 'each')
 
   var template = dom.outerHTML,
+      prev = dom.previousSibling,
       root = dom.parentNode,
-      placeholder = document.createComment('riot placeholder'),
+      rendered = [],
       tags = [],
-      child = getTag(dom),
       checksum
-
-  // console.log(expr);
-  root.insertBefore(placeholder, dom)
 
   expr = loopKeys(expr)
 
+  function add(pos, item, tag) {
+    rendered.splice(pos, 0, item)
+    tags.splice(pos, 0, tag)
+  }
+
   // clean template code
-  parent
-    .one('premount', function () {
-      if (root.stub) root = parent.root
-      // remove the original DOM node
-      dom.parentNode.removeChild(dom)
+  parent.one('update', function() {
+    root.removeChild(dom)
+
+  }).one('premount', function() {
+    if (root.stub) root = parent.root
+
+  }).on('update', function() {
+
+    var items = tmpl(expr.val, parent)
+    if (!items) return
+
+    // object loop. any changes cause full redraw
+    if (!Array.isArray(items)) {
+      //var testsum = JSON.stringify(items)
+      var testsum = items._id
+
+      if (testsum == checksum) return
+      checksum = testsum
+
+      // clear old items
+      each(tags, function(tag) { tag.unmount() })
+      rendered = []
+      tags = []
+
+      items = Object.keys(items).map(function(key) {
+        return mkitem(expr, key, items[key])
+      })
+
+    }
+
+    // unmount redundant
+    each(rendered, function(item) {
+      if (item instanceof Object) {
+        // skip existing items
+        if (items.indexOf(item) > -1) {
+          return
+        }
+      } else {
+        // find all non-objects
+        var newItems = arrFindEquals(items, item),
+            oldItems = arrFindEquals(rendered, item)
+
+        // if more or equal amount, no need to remove
+        if (newItems.length >= oldItems.length) {
+          return
+        }
+      }
+      var pos = rendered.indexOf(item),
+          tag = tags[pos]
+
+      if (tag) {
+        tag.unmount()
+        rendered.splice(pos, 1)
+        tags.splice(pos, 1)
+        // to let "each" know that this item is removed
+        return false
+      }
+
     })
-    .on('update', function () {
-      var items = tmpl(expr.val, parent),
-          test
 
-      // object loop. any changes cause full redraw
-      if (!isArray(items)) {
-        test = checksum
-        checksum = items ? JSON.stringify(items) : ''
-        if (checksum === test) return
+    // mount new / reorder
+    var prevBase = [].indexOf.call(root.childNodes, prev) + 1
+    each(items, function(item, i) {
 
-        items = !items ? [] :
-          Object.keys(items).map(function (key) {
-            return mkitem(expr, key, items[key])
-          })
-      }
-      // console.log(items);
-      var frag = document.createDocumentFragment(),
-          i = tags.length,
-          j = items.length
+      // start index search from position based on the current i
+      var pos = items.indexOf(item, i),
+          oldPos = rendered.indexOf(item, i)
 
-      // unmount leftover items
-      while (i > j) tags[--i].unmount()
-      tags.length = j
+      // if not found, search backwards from current i position
+      pos < 0 && (pos = items.lastIndexOf(item, i))
+      oldPos < 0 && (oldPos = rendered.lastIndexOf(item, i))
 
-      test = !checksum && !!expr.key
-      for (i = 0; i < j; ++i) {
-        var _item = test ? mkitem(expr, items[i], i) : items[i]
+      if (!(item instanceof Object)) {
+        // find all non-objects
+        var newItems = arrFindEquals(items, item),
+            oldItems = arrFindEquals(rendered, item)
 
-        if (!tags[i]) {
-          // mount new
-          (tags[i] = new Tag({ tmpl: template }, {
-              parent: parent,
-              isLoop: true,
-              root: root,
-              item: _item
-            })
-          ).mount()
-
-          frag.appendChild(tags[i].root)
+        // if more, should mount one new
+        if (newItems.length > oldItems.length) {
+          oldPos = -1
         }
-        
-        tags[i]._item = _item
-        tags[i].update(_item)
       }
 
-      root.insertBefore(frag, placeholder)
+      // mount new
+      var nodes = root.childNodes
+      if (oldPos < 0) {
+        if (!checksum && expr.key) var _item = mkitem(expr, item, pos)
 
-      if (child) parent.tags[getTagName(dom)] = tags
+        var tag = new Tag({ tmpl: template }, {
+          before: nodes[prevBase + pos],
+          parent: parent,
+          root: root,
+          item: _item || item
+        })
 
-    }).one('updated', function() {
-      var keys = Object.keys(parent)// only set new values
-      walk(root, function(node) {
-        // only set element node and not isLoop
-        if (node.nodeType == 1 && !node.isLoop && !node._looped) {
-          node._visited = false // reset _visited for loop node
-          node._looped = true // avoid set multiple each
-          setNamed(node, parent, keys)
-        }
+        tag.mount()
+
+        add(pos, item, tag)
+        return true
+      }
+
+      // change pos value
+      if (expr.pos && tags[oldPos][expr.pos] != pos) {
+        tags[oldPos].one('update', function(item) {
+          item[expr.pos] = pos
+        })
+        tags[oldPos].update()
+      }
+
+      // reorder
+      if (pos != oldPos) {
+        root.insertBefore(nodes[prevBase + oldPos], nodes[prevBase + (pos > oldPos ? pos + 1 : pos)])
+        return add(pos, rendered.splice(oldPos, 1)[0], tags.splice(oldPos, 1)[0])
+      }
+
+    })
+
+    rendered = items.slice()
+
+  }).one('updated', function() {
+    walk(root, function(dom) {
+      each(dom.attributes, function(attr) {
+        if (/^(name|id)$/.test(attr.name)) parent[attr.value] = dom
       })
     })
+  })
 
 }
 
@@ -523,22 +571,23 @@ function parseNamedElements(root, parent, childTags) {
 
   walk(root, function(dom) {
     if (dom.nodeType == 1) {
-      dom.isLoop = (dom.parentNode && dom.parentNode.isLoop || dom.getAttribute('each')) ? 1 : 0
-
+      dom.isLoop = 0
+      if(dom.parentNode && dom.parentNode.isLoop) dom.isLoop = 1
+      if(dom.getAttribute('each')) dom.isLoop = 1
       // custom child tag
       var child = getTag(dom)
 
       if (child && !dom.isLoop) {
         var tag = new Tag(child, { root: dom, parent: parent }, dom.innerHTML),
-            tagName = getTagName(dom),
+            namedTag = dom.getAttribute('name'),
+            tagName = namedTag && namedTag.indexOf(brackets(0)) < 0 ? namedTag : child.name,
             ptag = parent,
             cachedTag
 
-        while (!getTag(ptag.root)) {
-          if (!ptag.parent) break
+        while(!getTag(ptag.root)) {
+          if(!ptag.parent) break
           ptag = ptag.parent
         }
-
         // fix for the parent attribute in the looped elements
         tag.parent = ptag
 
@@ -548,7 +597,7 @@ function parseNamedElements(root, parent, childTags) {
         if (cachedTag) {
           // if the parent tags property is not yet an array
           // create it adding the first cached tag
-          if (!isArray(cachedTag))
+          if (!Array.isArray(cachedTag))
             ptag.tags[tagName] = [cachedTag]
           // add the new nested tag to the array
           ptag.tags[tagName].push(tag)
@@ -562,8 +611,10 @@ function parseNamedElements(root, parent, childTags) {
         childTags.push(tag)
       }
 
-      if (!dom.isLoop)
-        setNamed(dom, parent, [])
+      if(!dom.isLoop)
+        each(dom.attributes, function(attr) {
+          if (/^(name|id)$/.test(attr.name)) parent[attr.value] = dom
+        })
     }
 
   })
@@ -590,8 +641,7 @@ function parseExpressions(root, tag, expressions) {
 
     // loop
     var attr = dom.getAttribute('each')
-
-    if (attr && attr.match(/\{[\s\S]+\}/)) { _each(dom, tag, attr); return false }
+    if (attr) { _each(dom, tag, attr); return false }
 
     // attribute expressions
     each(dom.attributes, function(attr) {
@@ -615,26 +665,21 @@ function Tag(impl, conf, innerHTML) {
       opts = inherit(conf.opts) || {},
       dom = mkdom(impl.tmpl),
       parent = conf.parent,
-      isLoop = conf.isLoop,
-      item = conf.item,
       expressions = [],
       childTags = [],
       root = conf.root,
+      item = conf.item,
       fn = impl.fn,
       tagName = root.tagName.toLowerCase(),
       attr = {},
       loopDom,
       TAG_ATTRIBUTES = /([\w\-]+)\s?=\s?['"]([^'"]+)["']/gim
 
-
   if (fn && root._tag) {
     root._tag.unmount(true)
   }
 
-  // not yet mounted
-  this.isMounted = false
-
-  if (impl.attrs) {
+  if(impl.attrs) {
     var attrs = impl.attrs.match(TAG_ATTRIBUTES)
 
     each(attrs, function(a) {
@@ -643,7 +688,6 @@ function Tag(impl, conf, innerHTML) {
     })
 
   }
-
   // keep a reference to the tag just created
   // so we will be able to mount this tag multiple times
   root._tag = this
@@ -656,48 +700,37 @@ function Tag(impl, conf, innerHTML) {
 
   // grab attributes
   each(root.attributes, function(el) {
-    var val = el.value
-    // remember attributes with expressions only
-    if (brackets(/\{.*\}/).test(val)) attr[el.name] = val
+    attr[el.name] = el.value
   })
 
-  if (dom.innerHTML && !/select|select|optgroup|tbody|tr/.test(tagName)) {
+
+  if (dom.innerHTML && !/select/.test(tagName) && !/tbody/.test(tagName) && !/tr/.test(tagName))
     // replace all the yield tags with the tag inner html
-    if (root.tagName !== 'TABLE-VIEW') {
-      // console.log(dom.innerHTML);
-      // console.log(innerHTML);
-    }
     dom.innerHTML = replaceYield(dom.innerHTML, innerHTML)
-    
-  }
+
 
   // options
   function updateOpts() {
-    // update opts from current DOM attributes
-    each(root.attributes, function(el) {
-      opts[el.name] = tmpl(el.value, parent || self)
-    })
-    // recover those with expressions
     each(Object.keys(attr), function(name) {
       opts[name] = tmpl(attr[name], parent || self)
     })
   }
 
-  this.update = function(data) {
-    extend(self, data)
+  this.update = function(data, init) {
+    extend(self, data, item)
     updateOpts()
-    self.trigger('update', data)
-    update(expressions, self, data)
+    self.trigger('update', item)
+    update(expressions, self, item)
     self.trigger('updated')
   }
 
   this.mixin = function() {
     each(arguments, function(mix) {
-      mix = typeof mix == 'string' ? riot.mixin(mix) : mix
+      mix = 'string' == typeof mix ? riot.mixin(mix) : mix
       each(Object.keys(mix), function(key) {
         // bind methods to self
-        if (key != 'init')
-          self[key] = typeof mix[key] == 'function' ? mix[key].bind(self) : mix[key]
+        if ('init' != key)
+          self[key] = 'function' == typeof mix[key] ? mix[key].bind(self) : mix[key]
       })
       // init method will be called automatically
       if (mix.init) mix.init.bind(self)()
@@ -713,7 +746,6 @@ function Tag(impl, conf, innerHTML) {
 
     toggle(true)
 
-
     // parse layout after init. fn may calculate args for nested custom tags
     parseExpressions(dom, self, expressions)
 
@@ -721,32 +753,26 @@ function Tag(impl, conf, innerHTML) {
 
     // internal use only, fixes #403
     self.trigger('premount')
-    if (isLoop) {
-      // update the root attribute for the looped elements
-      self.root = root = loopDom = dom.firstChild
-    } else {
+
+    if (fn) {
       while (dom.firstChild) root.appendChild(dom.firstChild)
-      if (root.stub) self.root = root = parent.root
+
+    } else {
+      loopDom = dom.firstChild
+      root.insertBefore(loopDom, conf.before || null) // null needed for IE8
     }
+
+    if (root.stub) self.root = root = parent.root
+
     // if it's not a child tag we can trigger its mount event
-    if (!self.parent || self.parent.isMounted) {
-      self.isMounted = true
-      self.trigger('mount')
-    }
+    if (!self.parent) self.trigger('mount')
     // otherwise we need to wait that the parent event gets triggered
-    else self.parent.one('mount', function() {
-      // avoid to trigger the `mount` event for the tags
-      // not visible included in an if statement
-      if (!isInStub(self.root)) {
-        self.parent.isMounted = self.isMounted = true
-        self.trigger('mount')
-      }
-    })
+    else self.parent.one('mount', function() { self.trigger('mount') })
   }
 
 
   this.unmount = function(keepRootTag) {
-    var el = loopDom || root,
+    var el = fn ? root : loopDom,
         p = el.parentNode
 
     if (p) {
@@ -755,7 +781,7 @@ function Tag(impl, conf, innerHTML) {
         // remove this tag from the parent tags object
         // if there are multiple nested tags with same name..
         // remove this element form the array
-        if (isArray(parent.tags[tagName])) {
+        if (Array.isArray(parent.tags[tagName])) {
           each(parent.tags[tagName], function(tag, i) {
             if (tag._id == self._id)
               parent.tags[tagName].splice(i, 1)
@@ -789,12 +815,7 @@ function Tag(impl, conf, innerHTML) {
     // listen/unlisten parent (events flow one way from parent to children)
     if (parent) {
       var evt = isMount ? 'on' : 'off'
-
-      // the loop tags will be always in sync with the parent automatically
-      if (isLoop)
-        parent[evt]('unmount', self.unmount)
-      else
-        parent[evt]('update', self.update)[evt]('unmount', self.unmount)
+      parent[evt]('update', self.update)[evt]('unmount', self.unmount)
     }
   }
 
@@ -810,16 +831,10 @@ function setEventHandler(name, handler, dom, tag, item) {
 
     // cross browser event fix
     e = e || window.event
-
-    if (!e.which) e.which = e.charCode || e.keyCode
-    if (!e.target) e.target = e.srcElement
-
-    // ignore error on some browsers
-    try {
-      e.currentTarget = dom
-    } catch (ignored) { '' }
-
-    e.item = tag._item ? tag._item : item
+    e.which = e.which || e.charCode || e.keyCode
+    e.target = e.target || e.srcElement
+    e.currentTarget = dom
+    e.item = item
 
     // prevent default behaviour (by default)
     if (handler.call(tag, e) !== true && !/radio|check/.test(dom.type)) {
@@ -879,23 +894,14 @@ function update(expressions, tag, item) {
 
       // add to DOM
       if (value) {
-        if (stub) {
-          insertTo(stub.parentNode, stub, dom)
-          dom.inStub = false
-          // avoid to trigger the mount event if the tags is not visible yet
-          // maybe we can optimize this avoiding to mount the tag at all
-          if (!isInStub(dom)) {
-            walk(dom, function(el) {
-              if (el._tag && !el._tag.isMounted) el._tag.isMounted = !!el._tag.trigger('mount')
-            })
-          }
-        }
+        stub && insertTo(stub.parentNode, stub, dom)
+
       // remove from DOM
       } else {
         stub = expr.stub = stub || document.createTextNode('')
         insertTo(dom.parentNode, dom, stub)
-        dom.inStub = true
       }
+
     // show / hide
     } else if (/^(show|hide)$/.test(attrName)) {
       if (attrName == 'hide') value = !value
@@ -906,7 +912,7 @@ function update(expressions, tag, item) {
       dom.value = value
 
     // <img src="{ expr }">
-    } else if (attrName.slice(0, 5) == 'riot-' && attrName != 'riot-tag') {
+    } else if (attrName.slice(0, 5) == 'riot-') {
       attrName = attrName.slice(5)
       value ? dom.setAttribute(attrName, value) : remAttr(dom, attrName)
 
@@ -934,10 +940,6 @@ function each(els, fn) {
   return els
 }
 
-function isFunction(v) {
-  return typeof v === 'function' || false   // avoid IE problems
-}
-
 function remAttr(dom, name) {
   dom.removeAttribute(name)
 }
@@ -946,47 +948,71 @@ function fastAbs(nr) {
   return (nr ^ (nr >> 31)) - (nr >> 31)
 }
 
-function getTagName(dom) {
-  var child = getTag(dom),
-    namedTag = dom.getAttribute('name'),
-    tagName = namedTag && namedTag.indexOf(brackets(0)) < 0 ? namedTag : child.name
-
-  return tagName
+// max 2 from objects allowed
+function extend(obj, from, from2) {
+  from && each(Object.keys(from), function(key) {
+    obj[key] = from[key]
+  })
+  return from2 ? extend(obj, from2) : obj
 }
 
-function extend(src) {
-  var obj, args = arguments
-  for (var i = 1; i < args.length; ++i) {
-    if ((obj = args[i])) {
-      for (var key in obj) {      // eslint-disable-line guard-for-in
-        src[key] = obj[key]
-      }
+function checkIE() {
+  if (window) {
+    var ua = navigator.userAgent
+    var msie = ua.indexOf('MSIE ')
+    if (msie > 0) {
+      return parseInt(ua.substring(msie + 5, ua.indexOf('.', msie)), 10)
+    }
+    else {
+      return 0
     }
   }
-  return src
+}
+
+function optionInnerHTML(el, html) {
+  var opt = document.createElement('option'),
+      valRegx = /value=[\"'](.+?)[\"']/,
+      selRegx = /selected=[\"'](.+?)[\"']/,
+      valuesMatch = html.match(valRegx),
+      selectedMatch = html.match(selRegx)
+
+  opt.innerHTML = html
+
+  if (valuesMatch) {
+    opt.value = valuesMatch[1]
+  }
+
+  if (selectedMatch) {
+    opt.setAttribute('riot-selected', selectedMatch[1])
+  }
+
+  el.appendChild(opt)
+}
+
+function tbodyInnerHTML(el, html, tagName) {
+  var div = document.createElement('div')
+  div.innerHTML = '<table>' + html + '</table>'
+
+  if (/td|th/.test(tagName)) {
+    el.appendChild(div.firstChild.firstChild.firstChild.firstChild)
+  } else {
+    el.appendChild(div.firstChild.firstChild.firstChild)
+  }
 }
 
 function mkdom(template) {
-  var checkie = ieVersion && ieVersion < 10,
-      matches = /^\s*<([\w-]+)/.exec(template),
-      tagName = matches ? matches[1].toLowerCase() : '',
-      rootTag = (tagName === 'th' || tagName === 'td') ? 'tr' :
-                (tagName === 'tr' ? 'tbody' : 'div'),
+  var tagName = template.trim().slice(1, 3).toLowerCase(),
+      rootTag = /td|th/.test(tagName) ? 'tr' : tagName == 'tr' ? 'tbody' : 'div',
       el = mkEl(rootTag)
 
   el.stub = true
 
-  if (checkie) {
-    if (tagName === 'optgroup')
-      optgroupInnerHTML(el, template)
-    else if (tagName === 'option')
-      optionInnerHTML(el, template)
-    else if (rootTag !== 'div')
-      tbodyInnerHTML(el, template, tagName)
-    else
-      checkie = 0
-  }
-  if (!checkie) el.innerHTML = template
+  if (tagName === 'op' && ieVersion && ieVersion < 10) {
+    optionInnerHTML(el, template)
+  } else if ((rootTag === 'tbody' || rootTag === 'tr') && ieVersion && ieVersion < 10) {
+    tbodyInnerHTML(el, template, tagName)
+  } else
+    el.innerHTML = template
 
   return el
 }
@@ -1005,14 +1031,6 @@ function walk(dom, fn) {
   }
 }
 
-function isInStub(dom) {
-  while (dom) {
-    if (dom.inStub) return true
-    dom = dom.parentNode
-  }
-  return false
-}
-
 function mkEl(name) {
   return document.createElement(name)
 }
@@ -1022,7 +1040,20 @@ function replaceYield (tmpl, innerHTML) {
 }
 
 function $$(selector, ctx) {
-  return (ctx || document).querySelectorAll(selector)
+  ctx = ctx || document
+  return ctx.querySelectorAll(selector)
+}
+
+function arrDiff(arr1, arr2) {
+  return arr1.filter(function(el) {
+    return arr2.indexOf(el) < 0
+  })
+}
+
+function arrFindEquals(arr, el) {
+  return arr.filter(function (_el) {
+    return _el === el
+  })
 }
 
 function inherit(parent) {
@@ -1030,28 +1061,26 @@ function inherit(parent) {
   Child.prototype = parent
   return new Child()
 }
-
-function setNamed(dom, parent, keys) {
-  each(dom.attributes, function(attr) {
-    if (dom._visited) return
-    if (attr.name === 'id' || attr.name === 'name') {
-      dom._visited = true
-      var p, v = attr.value
-      if (~keys.indexOf(v)) return
-
-      p = parent[v]
-      if (!p)
-        parent[v] = dom
-      else
-        isArray(p) ? p.push(dom) : (parent[v] = [p, dom])
-    }
-  })
-}
 /**
  *
  * Hacks needed for the old internet explorer versions [lower than IE10]
  *
  */
+
+var ieVersion = checkIE()
+
+function checkIE() {
+  if (window) {
+    var ua = navigator.userAgent
+    var msie = ua.indexOf('MSIE ')
+    if (msie > 0) {
+      return parseInt(ua.substring(msie + 5, ua.indexOf('.', msie)), 10)
+    }
+    else {
+      return 0
+    }
+  }
+}
 
 function tbodyInnerHTML(el, html, tagName) {
   var div = mkEl('div'),
@@ -1061,7 +1090,7 @@ function tbodyInnerHTML(el, html, tagName) {
   div.innerHTML = '<table>' + html + '</table>'
   child = div.firstChild
 
-  while (loops--) {
+  while(loops--) {
     child = child.firstChild
   }
 
@@ -1073,20 +1102,10 @@ function optionInnerHTML(el, html) {
   var opt = mkEl('option'),
       valRegx = /value=[\"'](.+?)[\"']/,
       selRegx = /selected=[\"'](.+?)[\"']/,
-      eachRegx = /each=[\"'](.+?)[\"']/,
-      ifRegx = /if=[\"'](.+?)[\"']/,
-      innerRegx = />([^<]*)</,
       valuesMatch = html.match(valRegx),
-      selectedMatch = html.match(selRegx),
-      innerValue = html.match(innerRegx),
-      eachMatch = html.match(eachRegx),
-      ifMatch = html.match(ifRegx)
+      selectedMatch = html.match(selRegx)
 
-  if (innerValue) {
-    opt.innerHTML = innerValue[1]
-  } else {
-    opt.innerHTML = html
-  }
+  opt.innerHTML = html
 
   if (valuesMatch) {
     opt.value = valuesMatch[1]
@@ -1094,44 +1113,6 @@ function optionInnerHTML(el, html) {
 
   if (selectedMatch) {
     opt.setAttribute('riot-selected', selectedMatch[1])
-  }
-
-  if (eachMatch) {
-    opt.setAttribute('each', eachMatch[1])
-  }
-
-  if (ifMatch) {
-    opt.setAttribute('if', ifMatch[1])
-  }
-
-  el.appendChild(opt)
-}
-
-function optgroupInnerHTML(el, html) {
-  var opt = mkEl('optgroup'),
-      labelRegx = /label=[\"'](.+?)[\"']/,
-      elementRegx = /^<([^>]*)>/,
-      tagRegx = /^<([^ \>]*)/,
-      labelMatch = html.match(labelRegx),
-      elementMatch = html.match(elementRegx),
-      tagMatch = html.match(tagRegx),
-      innerContent = html
-
-  if (elementMatch) {
-    var options = html.slice(elementMatch[1].length+2, -tagMatch[1].length-3).trim()
-    innerContent = options
-  }
-
-  if (labelMatch) {
-    opt.setAttribute('riot-label', labelMatch[1])
-  }
-
-  if (innerContent) {
-    var innerOpt = mkEl('div')
-
-    optionInnerHTML(innerOpt, innerContent)
-
-    opt.appendChild(innerOpt.firstChild)
   }
 
   el.appendChild(opt)
@@ -1146,10 +1127,9 @@ var virtualDom = [],
     tagImpl = {},
     styleNode
 
-var RIOT_TAG = 'riot-tag'
 
 function getTag(dom) {
-  return tagImpl[dom.getAttribute(RIOT_TAG) || dom.tagName.toLowerCase()]
+  return tagImpl[dom.getAttribute('riot-tag') || dom.tagName.toLowerCase()]
 }
 
 function injectStyle(css) {
@@ -1158,23 +1138,16 @@ function injectStyle(css) {
 
   if (!document.head) return
 
-  if (styleNode.styleSheet)
+  if(styleNode.styleSheet)
     styleNode.styleSheet.cssText += css
   else
     styleNode.innerHTML += css
 
   if (!styleNode._rendered)
-    if (styleNode.styleSheet) {
+    if (styleNode.styleSheet)
       document.body.appendChild(styleNode)
-    } else {
-      var rs = $$('style[type=riot]')[0]
-      if (rs) {
-        rs.parentNode.insertBefore(styleNode, rs)
-        rs.parentNode.removeChild(rs)
-      } else {
-        document.head.appendChild(styleNode)
-      }
-    }
+    else
+      document.head.appendChild(styleNode)
 
   styleNode._rendered = true
 
@@ -1182,11 +1155,11 @@ function injectStyle(css) {
 
 function mountTo(root, tagName, opts) {
   var tag = tagImpl[tagName],
-      // cache the inner HTML to fix #855
-      innerHTML = root._innerHTML = root._innerHTML || root.innerHTML
+      innerHTML = root.innerHTML
+
   // clear the inner html
   root.innerHTML = ''
-    //console.log(innerHTML);
+
   if (tag && root) tag = new Tag(tag, { root: root, opts: opts }, innerHTML)
 
   if (tag && tag.mount) {
@@ -1200,103 +1173,88 @@ function mountTo(root, tagName, opts) {
 }
 
 riot.tag = function(name, html, css, attrs, fn) {
-  if (isFunction(attrs)) {
+  if (typeof attrs == 'function') {
     fn = attrs
-    if (/^[\w\-]+\s?=/.test(css)) {
-      attrs = css
-      css = ''
-    } else attrs = ''
+    if(/^[\w\-]+\s?=/.test(css)) {attrs = css; css = ''} else attrs = ''
   }
-  if (css) {
-    if (isFunction(css)) fn = css
-    else injectStyle(css)
-  }
+  if (typeof css == 'function') fn = css
+  else if (css) injectStyle(css)
   tagImpl[name] = { name: name, tmpl: html, attrs: attrs, fn: fn }
   return name
 }
 
 riot.mount = function(selector, tagName, opts) {
-  var els,
+
+  var el,
+      selctAllTags = function() {
+        var keys = Object.keys(tagImpl)
+        var list = keys.join(', ')
+        each(keys, function(t) {
+          list += ', *[riot-tag="'+ t.trim() + '"]'
+        })
+        return list
+      },
       allTags,
       tags = []
 
-  // helper functions
-
-  function addRiotTags(arr) {
-    var list = ''
-    each(arr, function (e) {
-      list += ', *[riot-tag="'+ e.trim() + '"]'
-    })
-    return list
-  }
-
-  function selectAllTags() {
-    var keys = Object.keys(tagImpl)
-    return keys + addRiotTags(keys)
-  }
-
-  function pushTags(root) {
-    if (root.tagName) {
-      if (tagName && !root.getAttribute(RIOT_TAG))
-        root.setAttribute(RIOT_TAG, tagName)
-
-      var tag = mountTo(root,
-        tagName || root.getAttribute(RIOT_TAG) || root.tagName.toLowerCase(), opts)
-
-      if (tag) tags.push(tag)
-    }
-    else if (root.length) {
-      each(root, pushTags)   // assume nodeList
-    }
-  }
-
-  // ----- mount code -----
-
-  if (typeof tagName === T_OBJECT) {
-    opts = tagName
-    tagName = 0
-  }
+  if (typeof tagName == 'object') { opts = tagName; tagName = 0 }
 
   // crawl the DOM to find the tag
-  if (typeof selector === T_STRING) {
-    if (selector === '*') {
+  if(typeof selector == 'string') {
+    if (selector == '*') {
       // select all the tags registered
       // and also the tags found with the riot-tag attribute set
-      selector = allTags = selectAllTags()
+      selector = allTags = selctAllTags()
     } else {
-      // or just the ones named like the selector
-      selector += addRiotTags(selector.split(','))
+      selector.split(',').map(function(t) {
+        selector += ', *[riot-tag="'+ t.trim() + '"]'
+      })
+
     }
-    els = $$(selector)
+    // or just the ones named like the selector
+    el = $$(selector)
   }
+  // probably you have passed already a tag or a NodeList
   else
-    // probably you have passed already a tag or a NodeList
-    els = selector
+    el = selector
 
   // select all the registered and mount them inside their root elements
-  if (tagName === '*') {
+  if (tagName == '*') {
     // get all custom tags
-    tagName = allTags || selectAllTags()
-    // if the root els it's just a single tag
-    if (els.tagName) {
-      els = $$(tagName, els)
+    tagName = allTags || selctAllTags()
+    // if the root el it's just a single tag
+    if (el.tagName) {
+      el = $$(tagName, el)
     } else {
-      // select all the children for all the different root elements
       var nodeList = []
-      each(els, function (_el) {
-        nodeList.push($$(tagName, _el))
+      // select all the children for all the different root elements
+      each(el, function(tag) {
+        nodeList = $$(tagName, tag)
       })
-      els = nodeList
+      el = nodeList
     }
     // get rid of the tagName
     tagName = 0
   }
-  if (els.tagName)
-    pushTags(els)
+
+  function push(root) {
+    if(tagName && !root.getAttribute('riot-tag')) root.setAttribute('riot-tag', tagName)
+
+    var name = tagName || root.getAttribute('riot-tag') || root.tagName.toLowerCase(),
+        tag = mountTo(root, name, opts)
+
+    if (tag) tags.push(tag)
+  }
+
+  // DOM node
+  if (el.tagName)
+    push(selector)
+  // selector or NodeList
   else
-    each(els, pushTags)
+    each(el, push)
 
   return tags
+
 }
 
 // update everything
@@ -1326,16 +1284,13 @@ riot.mountTo = riot.mount
  * Utils 函数
  */
 var utils = {
-    httpGet: function(url, params, callback, complete) {
+    httpGet: function(url, params, callback) {
         var xmlhttp = new XMLHttpRequest();
         var url = utils.concatParams(url, params);
         xmlhttp.open("GET", url, true);
         xmlhttp.send(null);
         xmlhttp.onreadystatechange = function() {
-            if (xmlhttp.readyState === 4) {
-                if (complete && typeof complete === 'function') {
-                    complete();
-                }
+            if (xmlhttp.readyState === 4) { 
                 if (xmlhttp.status === 200) {
                     var body = xmlhttp.responseText;
                     try {
@@ -1355,16 +1310,13 @@ var utils = {
         }
     },
 
-    httpPost: function(url, params, callback, complete) {
+    httpPost: function(url, params, callback, type) {
         var xmlhttp = new XMLHttpRequest();
         xmlhttp.open("POST", url, true);
         xmlhttp.setRequestHeader("Content-type", "application/json");
         xmlhttp.send(params);
         xmlhttp.onreadystatechange = function() {
             if (xmlhttp.readyState === 4) { 
-                if (complete && typeof complete === 'function') {
-                    complete();
-                }
                 if (xmlhttp.status === 200) {
                     try {
                         var data = JSON.parse(xmlhttp.responseText)
@@ -1505,354 +1457,9 @@ var utils = {
         else {
             parent.insertBefore(newElement, targetElement.nextSibling);
         }
-    },
-    isArray: function(value) {
-        return toString.call(value) === '[object Array]';
     }
-};
-
-(function (root, factory) {
-    if (typeof define === 'function' && define.amd) {
-        // AMD. Register as an anonymous module.
-        define(function () {
-            // Also create a global in case some scripts
-            // that are loaded still are looking for
-            // a global even when an AMD loader is in use.
-            return (root.jsLoader = factory());
-        });
-    } else {
-        // Browser globals
-        root.jsLoader = factory();
-    }
-}(utils, function () {
-
-    var cache = {};
-    var _cid = 0;
-    var tasks = [];
-    var toString = Object.prototype.toString;
-    var isArray = isType('Array');
-    var isFunction = isType('Function');
-    var HEAD_NODE = document.head || document.getElementsByTagName('head')[0];
-    var DONE = 'done';
-    var INPROCESS = 'inprocess';
-    var REJECTED = 'rejected';
-    var PENDING = 'pending';
-    var processCache = {};
-
-    /**
-     * 产生客户端id
-     * @return {Number} [description]
-     */
-    function cid() {
-        return _cid++;
-    }
-
-    function isCSS(css) {
-        return css.match(/\.css\??/);
-    }
-
-    /**
-     * Script对象，储存需要加载的脚本的基本信息
-     * @param {String} uri 地址
-     */
-    function Script(uri) {
-        this.uri = uri;
-        this.cid = cid();
-        this.status = PENDING;
-    }
-
-    /**
-     * 从缓存中获取需要的Script对象
-     * @param  {String} uri [description]
-     * @return {Object}     需要的Script对象
-     */
-    Script.get = function (uri) {
-        // 如果不存在于缓存中，创建一个新的Script对象
-        return cache[uri] || (cache[uri] = new Script(uri));
-    };
-
-    /**
-     * 当加载完成或失败时调用的处理函数
-     * @param  {Object} js Script对象
-     * @return {[type]}    [description]
-     */
-    Script.resolve = function (js) {
-        var self = this;
-        self.status++;
-        if (js && js.status === REJECTED) {
-            var error = Error('Source: ' + js.uri + ' load failed');
-            reject(error);
-        }
-        if (self.status === self.task.length) {
-            setTimeout(function () {
-                self.callback && self.callback();
-                self = null;
-                resolve(tasks.shift());
-            }, 7);
-        }
-    };
-
-    /**
-     * 用于获取类型的方法
-     * @param  {String}  type [description]
-     * @return {Boolean}      [description]
-     */
-    function isType(type) {
-        return function (obj) {
-            return toString.call(obj) === '[object ' + type + ']';
-        }
-    }
-
-    /**
-     * 将传入参数处理成数组形式
-     * @param  {[type]} obj [description]
-     * @return {Array}      [description]
-     */
-    function makeArray(obj) {
-        return Array.prototype.concat(obj);
-    }
-
-    /**
-     * jsLoader
-     * @param  {[type]}   js       function or string or array
-     * @param  {Function} callback 加载完成后的回调
-     * @return {Function}          
-     */
-    function jsLoader(js, callback) {
-        jsLoader.then(js, callback).start();
-        return jsLoader;
-    }
-
-    /**
-     * then方法用于向任务列表增加任务
-     * @param  {[type]}   js       function or string or array
-     * @param  {Function} callback [description]
-     * @return {Function}          [description]
-     */
-    jsLoader.then = function (js, callback) {
-        if (!js) {
-            return jsLoader;
-        }
-        if (!isArray(js)) {
-            js = makeArray(js);
-        }
-        var resolver = {
-            task: [],
-            callback: callback,
-            status: 0
-        };
-        for (var i = 0; i < js.length; i++) {
-            resolver.task.push(getCache(js[i]));
-        }
-        tasks.push(resolver);
-        // jsLoader.resolve();
-        return jsLoader;
-    };
-
-    /**
-     * [reject description]
-     * @param  {Object} e Object Error
-     * @return {[type]}   [description]
-     */
-    function reject(e) {
-        throw e;
-    }
-
-    /**
-     * 执行任务序列中的任务
-     * @param  {Object} resolver [description]
-     * @return {[type]}          [description]
-     */
-    function resolve(resolver) {
-        if (!resolver) {
-            if (!tasks.length) {
-                return;
-            }
-        }
-        for (var i = 0; i < resolver.task.length; i++) {
-            var js = resolver.task[i];
-            request(js, resolver);
-        }
-    }
-
-    /**
-     * 开始
-     * @return {[type]} [description]
-     */
-    jsLoader.start = function () {
-        resolve(tasks.shift());
-        return jsLoader;
-    }
-
-    function loadStyles(script, resolver) {
-        var node = document.createElement('link');
-        node.type = 'text/css';
-        node.rel = 'stylesheet';
-        node.href = script.uri;
-        HEAD_NODE.appendChild(node);
-        node = null;
-        script.status = DONE;
-        Script.resolve.call(resolver);
-    }
-
-    /**
-     * [request description]
-     * @param  {[type]} js       [description]
-     * @param  {[type]} resolver [description]
-     * @return {[type]}          [description]
-     */
-    function request(js, resolver) {
-        if (isFunction(js.uri)) {
-            try {
-                js.uri();
-                js.status = DONE;
-                Script.resolve.call(resolver);
-            }
-            catch (e) {
-                js.status = REJECTED;
-                Script.resolve.call(resolver);
-            }
-            return;
-        }
-        if (js.status === DONE) {
-            Script.resolve.call(resolver);
-            return;
-        }
-        if (isCSS(js.uri)) {
-            loadStyles(js, resolver);
-            return;
-        }
-        if (js.status === INPROCESS) {
-            // 在loading过程中，标记遇到的resolver
-            js.changeStatus = true;
-            processCache[js.cid] = processCache[js.cid] || [];
-            processCache[js.cid].push({js:js, resolver:resolver});
-            return;
-        }
-        js.status = INPROCESS;
-        var node = document.createElement('script');
-        node.async = true;
-        node.src = js.uri;
-        node.onload = node.onerror = onloadResolve;
-        HEAD_NODE.appendChild(node);
-
-        function onloadResolve(evt) {
-            if (evt.type === 'error') {
-                js.status = REJECTED;
-            }
-            if (evt.type === 'load') {
-                js.status = DONE;
-            }
-            Script.resolve.call(resolver, js);
-            if (js.changeStatus) {
-                // 如果加载完成，处理处在waiting状态下的任务
-                js.changeStatus = false;
-                for (var i = 0; i < processCache[js.cid].length; i++) {
-                    var tmp = processCache[js.cid][i];
-                    Script.resolve.call(tmp.resolver, tmp.js);
-                }
-                processCache[js.cid] = null;
-            }
-            node.onload = node.onerror = null;
-            HEAD_NODE.removeChild(node);
-            node = null;
-        }
-    }
-
-    /**
-     * 获取可能存在别名的Script对象
-     * @param  {String} uri [description]
-     * @return {Object}     Script Object
-     */
-    function getCache(uri) {
-        var src = getAlias(uri);
-        return  src ? Script.get(src) : Script.get(uri);
-    };
-
-    /**
-     * 获取真实地址
-     * @param  {String} str [description]
-     * @return {[type]}     [description]
-     */
-    function getAlias(str) {
-        return jsLoader.alias[str];
-    }
-
-    jsLoader.alias = {};
-
-    return jsLoader;
-
-}));
-
-/*
- * 全局事件监控
- */
-var EventCtrl = EC = riot.observable();
-
-/*
- * 外部方法传入
- */
-var iToolkit = {};
-iToolkit.tableExtend = {};
-
-riot.tag('date-picker', '<input type="text" value="" class="datepicker">', function(opts) {
-
-    var self = this;
-    var EL = self.root;
-    var config = self.opts.opts || self.opts;
-    var path = config.path || '';
-    utils.jsLoader([
-        path + 'datepicker.js',
-        path + 'datepicker.css'
-    ],function () {
-        var inputEle = self.root.getElementsByTagName('input')[0]
-            config.fields = [self.root.getElementsByTagName('input')[0]];
-            new DatePicker(config);
-    });
-
-
-});
+}
 riot.tag('dropdown', '', function(opts) {
-
-});
-riot.tag('editable-link', '<a href="javascript:void(0);" if="{ !editable }" onclick="{ open }">{ value }</a> <super-form if="{ editable }" action="{ action }" opts="{ formOpts }"> <input type="text" value="{ parent.value }" name="{ parent.name }" class="editable-link-input"> <input type="submit" value="提交"> <button onclick="{ parent.close }">取消</button> </super-form>', function(opts) {
-
-    var self = this;
-    self.editlink = false;
-    var EL = self.root;
-    var config = self.opts.opts || self.opts;
-
-    self.on('mount', function() {
-        self.action = EL.getAttribute('action');
-        self.value = EL.getAttribute('text');
-        self.name = EL.getAttribute('name');
-        self.update();
-    })
-
-    this.open = function(e) {
-        self.editable = true;
-        self.update();
-    }.bind(this);
-
-    this.close = function(e) {
-        self.editable = false;
-        self.update();
-    }.bind(this);
-
-    self.formOpts = {
-        errCallback: function() {
-            config.errCallback();
-            EL.querySelector('.editable-link-input').value = self.value;
-            self.editable = false;
-            self.update();
-        },
-        callback: function(value) {
-            config.callback();
-            self.value = EL.querySelector('.editable-link-input').value;
-            self.editable = false;
-            self.update();
-        }
-    }
 
 });
 riot.tag('file-upload', '<div id="uploader" class="wu-example">  <div id="thelist" class="uploader-list"></div> <div class="btns"> <div id="picker">选择文件</div> <button id="ctlBtn" class="btn btn-default">开始上传</button> </div> </div>', function(opts) {
@@ -1936,8 +1543,6 @@ riot.tag('goto-top', '<div class="itoolkit-goto-top" show="{ showGotoTop }" oncl
     var avalibleHeight = window.screen.availHeight;
     
     self.on('mount', function() {
-        self.root.querySelector('.itoolkit-goto-top').style.bottom = self.config.bottom;
-        self.root.querySelector('.itoolkit-goto-top').style.right = self.config.right;
         window.addEventListener('scroll', self.controlGotoTop);
     })
     
@@ -1989,6 +1594,7 @@ riot.tag('loading', '<div class="{itoolkit-loading: true, default: default}" > <
         var img = childDom.querySelector('loading .itoolkit-loading img');
         if (img) {
             img.style.height = config.imgHeight || '50px';
+
         }
 
         var cellHeight = parseInt(window.getComputedStyle(childDom, null).height.replace('px', ''), 10);
@@ -2016,58 +1622,30 @@ riot.tag('loading', '<div class="{itoolkit-loading: true, default: default}" > <
     
 
 });
-riot.tag('modal', '<div class="itoolkit-modal-dialog" riot-style="width:{width}; height:{height}"> <div class="itoolkit-modal-title"> <span>{ title }</span> <div class="itoolkit-modal-close-wrap" onclick="{ close }"> <div class="itoolkit-modal-close"></div> </div> </div> <div class="itoolkit-modal-container"> <yield> </div> </div>', function(opts) {
+riot.tag('modal', '<div class="modal-dialog" riot-style="width:{width}px; height:{height}px"> <div class="modal-title"> <span>{ title }</span> <div class="modal-close-wrap" onclick="{ close }"> <div class="modal-close"></div> </div> </div> <div class="modal-container"> <yield> </div> </div>', function(opts) {
 
     var self = this;
     var config = self.opts.opts || self.opts;
-    var EL = self.root;
     for (i in config) {
         self[i] = config[i];
     }
     self.width = config.width || 600;
-    self.height = config.height || 'auto';
-
-    self.on('mount', function() {
-        var container = self.root.querySelector('.itoolkit-modal-container');
-        var head = self.root.querySelector('.itoolkit-modal-title');
-        var headHeight = parseInt(window.getComputedStyle(head, null).height.replace('px', ''));
-        if (config.height) {
-            container.style.height = (self.height - headHeight - 2) + 'px';
-        }
-
-    })
+    self.height = config.width || 300;
 
     this.close = function(e) {
         self.root.style.display = 'none';
     }.bind(this);
-    if (document.querySelector("[modal-open-target='" + self.root.id + "']")) {
-        document.querySelector("[modal-open-target='" + self.root.id + "']").onclick = function() {
-            self.root.style.display = 'block';
-        }
-    }
-
-    self.root.open = function() {
+    document.querySelector("[modal-open-target='" + self.root.id + "']").onclick = function() {
         self.root.style.display = 'block';
-    }
-
-    self.root.close = function() {
-        self.root.style.display = 'none';
-    }
-
-    self.root.loadData = function(newData, colName){
-        colName = colName || 'data';
-        self[colName] = newData
-        self.update();
     }
 
 
 
 
 });
-riot.tag('paginate', '<div onselectstart="return false" ondragstart="return false"> <div class="paginate"> <li onclick="{ goFirst }">«</li> <li onclick="{ goPrev }">‹</li> </div> <ul class="paginate"> <li each="{ pages }" onclick="{ parent.changePage }" class="{ active: parent.currentPage == page }">{ page }</li> </ul> <div class="paginate"> <li onclick="{ goNext }">›</li> <li onclick="{ goLast }">»</li> </div> <div class="paginate"> <form onsubmit="{ redirect }"> <span class="redirect" if="{ redirect }">跳转到<input name="page" riot-type={"number"} style="width: 40px;" min="1" max="{ pageCount }">页 </span> <span class="page-sum" if="{ showPageCount }"> 共<em>{ pageCount }</em>页 </span> <span class="item-sum" if="{ showItemCount }"> <em>{ count }</em>条 </span> <input type="submit" style="display: none;"> </form> </div> </div>', function(opts) {
+riot.tag('paginate', '<div class="paginate"> <li onclick="{ goFirst }">«</li> <li onclick="{ goPrev }">‹</li> </div> <ul class="paginate" if="{ pageCount > 1 }"> <li each="{ pages }" onclick="{ parent.changePage }" class="{ active: parent.currentPage == page }">{ page }</li> </ul> <div class="paginate"> <li onclick="{ goNext }">›</li> <li onclick="{ goLast }">»</li> </div>', function(opts) {
     
     var self = this;
-    var EL = self.root;
     var config = self.opts.opts || self.opts;
     
     self.count = config.count || 0;
@@ -2076,47 +1654,9 @@ riot.tag('paginate', '<div onselectstart="return false" ondragstart="return fals
     self.currentPage = config.currentPage || 1;
     self.url = config.url || '';
     self.showNumber = config.showNumber || 5;
-
-    self.redirect = config.redirect || true;
-    self.showPageCount = config.showPageCount || true;
-    self.showItemCount = config.showItemCount || true;
-    self.needInit = config.needInit || false;
-
-    EL.setCount = function (num) {
-        var count = self.count + num;
-        var oldPageCount = self.pageCount;
-        count < 0
-        ? self.count = 0
-        : self.count = count;
-
-        self.pageCount = Math.ceil(self.count/self.pagesize) || 1;
-        self.currentPage = (
-            self.currentPage > self.pageCount
-            ? self.pageCount
-            : self.currentPage
-        );
-
-        if (self.pageCount <= self.showNumber) {
-            self.pages = [];
-            for (var i = 0; i < self.pageCount; i++) {
-                self.pages.push({page: i + 1});
-            }
-        }
-
-        if (self.needInit) {
-            config.callback(self.currentPage);
-        }
-
-        self.pageChange(self.currentPage)
-        self.update();
-    };
-    
-    if (self.needInit) {
-        config.callback(self.currentPage);
-    }
+    config.callback(self.currentPage);
 
     self.pages = [];
-    
     if (self.pageCount < (self.showNumber + 1)) {
         for (i = 0; i < self.pageCount; i++) {
             self.pages.push({page: i + 1});
@@ -2131,40 +1671,31 @@ riot.tag('paginate', '<div onselectstart="return false" ondragstart="return fals
     self.update();
 
     this.goFirst = function(e) {
-        self.pageChange(1);
+        config.callback(1);
+        self.currentPage = 1;
+        self.pageChange(self.currentPage);
     }.bind(this);
 
     this.goPrev = function(e) {
         if (self.currentPage > 1) {
-            self.pageChange(self.currentPage - 1);
+            config.callback(self.currentPage - 1);
+            self.currentPage = self.currentPage - 1;
+            self.pageChange(self.currentPage);
         }
     }.bind(this);
 
     this.goNext = function(e) {
         if (self.currentPage < self.pageCount) {
-            self.pageChange(self.currentPage + 1);
+            config.callback(self.currentPage + 1);
+            self.currentPage = self.currentPage + 1;
+            self.pageChange(self.currentPage);
         }
     }.bind(this);
     
     this.goLast = function(e) {
-        self.pageChange(self.pageCount);
-    }.bind(this);
-
-    this.redirect = function(e) {
-        var index = self.page.value;
-        if (parseInt(index, 10) && parseInt(index, 10) < (self.pageCount + 1)) {
-            self.pageChange(parseInt(index, 10));
-        }
-    }.bind(this);
-
-    this.changePage = function(e) {
-        var page = e.item.page
-        if (typeof(page) === 'string') {
-            return false;
-        }
-        else {
-            self.pageChange(page);
-        }
+        config.callback(self.pageCount);
+        self.currentPage = self.pageCount;
+        self.pageChange(self.currentPage);
     }.bind(this);
 
     self.pageChange = function(page) {
@@ -2195,7 +1726,17 @@ riot.tag('paginate', '<div onselectstart="return false" ondragstart="return fals
             }
             self.pages.push({page: '...'});
         }
-    };
+    }
+
+    this.changePage = function(e) {
+        var page = e.item.page
+        if (typeof(page) === 'string') {
+            return false;
+        }
+        else {
+            self.pageChange(page);
+        }
+    }.bind(this);
 
 
 
@@ -2217,11 +1758,11 @@ riot.tag('super-div', '<style scope> super-div{ display: block; } </style> <yiel
     var self = this;
     var config = self.opts.opts || self.opts;
     var EL = self.root;
+    self.superDivUrl = EL.getAttribute('data-get') || EL.getAttribute('data-jsonp');
 
     for (i in config) {
         self[i] = config[i];
     }
-    
     
     self.getData = function(params) {
         var params = params || {};
@@ -2242,26 +1783,20 @@ riot.tag('super-div', '<style scope> super-div{ display: block; } </style> <yiel
     }
 
     self.on('mount', function() {
-        EL.style.display = 'block';
-        self.superDivUrl = EL.getAttribute('data-get') || EL.getAttribute('data-jsonp');
         if (self.superDivUrl) {
             self.getData(config.params);
         }
     })
-    
-    
-    self.loadData = EL.loadData = function(newData, colName){
+
+    EL.loadData = function(newData, colName){
         colName = colName || 'data';
         self[colName] = newData
-        self.update();
+        self.update()
     }
 
-    self.reload = EL.reload = function() {
+    EL.reloadData = function() {
         if (self.superDivUrl) {
             self.getData(config.params);
-        }
-        else {
-            self.update();
         }
     }
 
@@ -2274,207 +1809,18 @@ riot.tag('super-form', '<form onsubmit="{ submit }" > <yield> </form>', function
     var config = self.opts.opts || self.opts;
     var keyWords = ['insertTip', 'ajaxSubmit', 'submit'];   //保留字，不被覆盖
 
-    var NUMBER_REGEXP = {
-        NON_NEGATIVE_INT: /^0$|^-[1-9]\d*$/,                            //非负整数（正整数 + 0） 
-        POSITIVE_INT: /^[1-9]\d*$/,                                     //正整数 
-        NON_POSITIVE_INT: /^[1-9]\d*$|^0$/,                             //非正整数（负整数 + 0） 
-        NEGATIVE_INT: /^-[1-9]\d*$/,                                    //负整数 
-        INT: /^-?[1-9]\d*$|^0$/,                                        //整数 
-        NON_NEGATIVE_FLOAT: /^(\d)(\.\d+)?$|^([1-9]\d*)(\.\d+)?$|^0$/,  //非负浮点数（正浮点数 + 0） 
-        POSITIVE_FLOAT: /^(\d)(\.\d+)?$|^([1-9]\d*)(\.\d+)?$/,          //正浮点数 
-        NON_POSITIVE_FLOAT: /^(-\d)(\.\d+)?$|^(-[1-9]\d*)(\.\d+)?$|^0$/,//非正浮点数（负浮点数 + 0） 
-        NEGATIVE_FLOAT: /^(-\d)(\.\d+)?$|^(-[1-9]\d*)(\.\d+)?$/,        //负浮点数 
-        FLOAT: /^(-?\d)(\.\d+)?$|^(-?[1-9]\d*)(\.\d+)?$|^0$/            //浮点数
-    };
-
     self.presentWarning = '必填';
     self.emailWarning = '邮箱格式错误';
     self.mobileWarning = '手机格式错误';
     self.urlWarning = '网址格式错误';
     self.successTips = '通过';
     self.regWarning = '字段不符合验证规则';
-    self.numWarning = '数字格式错误';
-
-    self.passClass = config.passClass || 'valid-pass';
-    self.failedClass = config.failedClass || 'valid-failed';
-
-    
-    var comparator = function (type) {
-        return {
-            handler: function (min, max, dom, value, validArr, name) {
-                switch (type) {
-                    case 'number':
-                        return numComparator(min, max, dom, value, validArr, name);
-                    case 'string':
-                    default:
-                        return strCompatator(min, max, dom, value, validArr, name);
-                }
-            }
-        };
-    };
-
-    
-    function strCompatator(min, max, dom, value, validArr, name) {
-        var nMin = isNaN(min);
-        var nMax = isNaN(max);
-        var len = value.length;
-        if (!nMin && !nMax) {
-            if (len > max || len < min) {
-                validArr.push(name);
-                self.onValidRefuse(dom, self.bpWarning(min, max));
-            }
-            else {
-                self.onValidPass(dom, self.successTips);
-            }
-        }
-        else {
-            if (!nMin) {
-                if (len < min) {
-                    validArr.push(name);
-                    self.onValidRefuse(dom, self.minWarning(min));
-                }
-                else {
-                    self.onValidPass(dom, self.successTips);
-                }
-            }
-            if (!nMax) {
-                if (len > max) {
-                    validArr.push(name);
-                    self.onValidRefuse(dom, self.maxWarning(max));
-                }
-                else {
-                    self.onValidPass(dom, self.successTips);
-                }
-            }
-            if (nMax && nMin) {
-                self.onValidPass(dom, self.successTips);
-            }
-        }
-    }
-
-    
-    function numComparator(min, max, dom, value, validArr, name) {
-        var nMin = isNaN(min);
-        var nMax = isNaN(max);
-        var value = +value;
-        if (!nMin && !nMax) {
-            if (value > max || value < min) {
-                validArr.push(name);
-                self.onValidRefuse(dom, self.numBpWarning(min, max));
-            }
-            else {
-                self.onValidPass(dom, self.successTips);
-            }
-        }
-        else {
-            if (!nMin) {
-                if (value < min) {
-                    validArr.push(name);
-                    self.onValidRefuse(dom, self.minNumWarning(min));
-                }
-                else {
-                    self.onValidPass(dom, self.successTips);
-                }
-            }
-            if (!nMax) {
-                if (value > max) {
-                    validArr.push(name);
-                    self.onValidRefuse(dom, self.maxNumWarning(max));
-                }
-                else {
-                    self.onValidPass(dom, self.successTips);
-                }
-            }
-            if (nMax && nMin) {
-                self.onValidPass(dom, self.successTips);
-            }
-        }
-    }
-
-    
-
-
-
-
-
-
-
-
-
-
-
-
-
-    self.one('mount', function() {
-        EL.style.display = 'block';
-
-
-
-        if (config.realTime && config.valid) {
-            var elems = self.root.getElementsByTagName('form')[0].elements;
-            for (var i = 0, len = elems.length; i < len; i ++) {
-
-                elems[i].addEventListener('input', valueOnChange, false);
-            }
-        }
-    });
-
-    
-    function valueOnChange(e) {
-        doCheck([], this);
-    }
 
     EL.loadData = function(newData, colName){
         colName = colName || 'data';
         self[colName] = newData;
         self.update();
     }
-
-    self.checkExistKey = function(obj, key, value) {
-        if (obj.hasOwnProperty(key)) {
-            if (utils.isArray(obj[key])) {
-                obj[key].push(value);
-            }
-            else {
-                var arr = [];
-                arr.push(obj[key]);
-                arr.push(value)
-                obj[key] = arr;
-            }                  
-        }
-        else {
-            obj[key] = value;
-        }
-    }
-
-    self.getData = EL.getData = function(){
-        var elems = self.root.getElementsByTagName('form')[0].elements;
-        var params = {};
-        for (var i = 0; i < elems.length; i++) {
-            if (elems[i].name) {
-                if (elems[i].tagName === "SELECT") {
-                    var selected = elems[i].selectedOptions;
-                    for (j = 0; j < selected.length; j++) {
-                        value = selected[j].value;
-                        self.checkExistKey(params, elems[i].name, encodeURIComponent(value));
-                    }
-                } 
-                else if (elems[i].type === "checkbox" || elems[i].type === "radio"){
-                    if (elems[i].checked) {
-                        value = elems[i].value;
-                        self.checkExistKey(params, elems[i].name, encodeURIComponent(value));
-                    }
-                }
-                else {
-                    value = elems[i].value;
-                    self.checkExistKey(params, elems[i].name, encodeURIComponent(value));
-                }
-            }
-        }
-        return params;
-    }
-    
-    
 
     for (i in config) {
         if (keyWords.indexOf(i) < 0) {
@@ -2494,24 +1840,8 @@ riot.tag('super-form', '<form onsubmit="{ submit }" > <yield> </form>', function
         return '不得小于' + n + '个字符';
     }
 
-    self.bpWarning = config.bpWarning || function (min, max) {
-        return '只允许' + min + '-' + max + '个字符';
-    }
-
-    self.minNumWarning = config.minNumWarning || function (n) {
-        return '不得小于' + n;
-    }
-    self.maxNumWarning = config.maxNumWarning || function (n) {
-        return '不得大于' + n;
-    }
-    self.numBpWarning = config.numBpWarning || function (min, max) {
-        return '输入数字应在' + min + '-' + max + '之间';
-    }
-
-    
-    self.removeTips = EL.removeTips = function() {
+    self.removeTips = function() {
         var root = self.root;
-        var elems = root.getElementsByTagName('form')[0].elements;
         var tips = root.getElementsByClassName('tip-container');
         if (tips && tips.length) {
             del();
@@ -2519,19 +1849,13 @@ riot.tag('super-form', '<form onsubmit="{ submit }" > <yield> </form>', function
 
         function del() {
             for (i = 0; i < tips.length; i++) {
-                tips[i].parentNode.removeChild(tips[i]);                
+                tips[i].parentNode.removeChild(tips[i]);
                 if (tips.length) {
                     del();
                 }
             }
         }
-
-        for (var i = 0; i < elems.length; i++) {
-            utils.removeClass(elems[i], self.passClass);
-            utils.removeClass(elems[i], self.failedClass);
-        }
     }
-    
     
     self.insertTip = function(dom, message, className){
         var tip = dom.nextElementSibling;
@@ -2546,27 +1870,19 @@ riot.tag('super-form', '<form onsubmit="{ submit }" > <yield> </form>', function
 
     self.onValidRefuse = config.onValidRefuse || function(dom, errorTips) {
         self.insertTip(dom, errorTips, 'tip-container');
-        utils.removeClass(dom, self.passClass);
-        utils.addClass(dom, self.failedClass);
     }
 
     self.onValidPass = config.onValidPass || function(dom, successTips) {
         self.insertTip(dom, successTips, 'tip-container success');
-        utils.removeClass(dom, self.failedClass);
-        utils.addClass(dom, self.passClass);
     }
 
-    
     self.ajaxSubmit = function(elems, url) {
         var params = '';
         for (var i = 0; i < elems.length; i++) {
             if (elems[i].name) {
                 if (elems[i].tagName === "SELECT") {
-                    var selected = elems[i].selectedOptions;
-                    for (j = 0; j < selected.length; j++) {
-                        value = selected[j].value;
-                        params += elems[i].name + "=" + encodeURIComponent(value) + "&";
-                    }
+                    value = elems[i].options[elems[i].selectedIndex].value;
+                    params += elems[i].name + "=" + encodeURIComponent(value) + "&";
                 } 
                 else if (elems[i].type === "checkbox" || elems[i].type === "radio"){
                     if (elems[i].checked) {
@@ -2580,18 +1896,10 @@ riot.tag('super-form', '<form onsubmit="{ submit }" > <yield> </form>', function
                 }
             }
             if (elems[i].type === "submit") {
-                if (elems[i].tagName === 'BUTTON') {
-                    var submitbtn = elems[i];
-                    var submitText = submitbtn.innerHTML;
-                    submitbtn.disabled = 'disabled';
-                    submitbtn.innerHTML = self.submitingText;
-                }
-                else {
-                    var submitbtn = elems[i];
-                    var submitText = submitbtn.value;
-                    submitbtn.disabled = 'disabled';
-                    submitbtn.value = self.submitingText;
-                }
+                var submitbtn = elems[i];
+                var submitText = submitbtn.value || submitbtn.innerText;
+                submitbtn.disabled = 'disabled';
+                submitbtn.value = self.submitingText;
             }
         }
         var xmlhttp = new XMLHttpRequest();
@@ -2599,57 +1907,119 @@ riot.tag('super-form', '<form onsubmit="{ submit }" > <yield> </form>', function
         xmlhttp.setRequestHeader("Content-type", "application/x-www-form-urlencoded");
         xmlhttp.send(params);
         xmlhttp.onreadystatechange = function() {
-            if (xmlhttp.readyState === 4) {
-                self.removeTips();
-                if (submitbtn.tagName === 'BUTTON') {
-                    submitbtn.innerHTML = submitText;
-                }
-                else {
-                    submitbtn.value = submitText;
-                }
-                submitbtn.disabled = false;
-                if (config.complete && typeof config.complete === 'function') {
-                    config.complete();
-                }
+            if (xmlhttp.readyState === 4) { 
                 if (xmlhttp.status === 200) {
                     try {
                         var result = JSON.parse(xmlhttp.responseText);
-                        config.callback && config.callback(result);
-                        EC.trigger('submit_success', result);
+                        config.callback(result);
                     }catch(e){
-                        throw new Error(e.message);
+                        console.log(e);
                     }
                 }
                 else {
-                    config.errCallback && config.errCallback(params);
-                    EC.trigger('submit_error', params);
+                    config.errCallback(params);
                 }
+                self.removeTips();
+                submitbtn.value = submitText;
+                submitbtn.disabled = false;
             } 
         };
     }
-    
-    
+
     this.submit = function(e) {
         var validArr = [];
         var elems = self.root.getElementsByTagName('form')[0].elements;
-        var action = self.action || self.root.getAttribute('action');
-        var url = action;
+        var url = self.root.getAttribute('action');
 
         if (config.valid) {
             for (var i = 0; i < elems.length; i++) {
-                doCheck(validArr, elems[i]);
+                var valid = elems[i].getAttribute('valid');
+                var max = elems[i].getAttribute('max');
+                var min = elems[i].getAttribute('min');
+                var v = elems[i].value; 
+                var name = elems[i].name;
+                var dom = elems[i];
+                if (name && valid) {
+                    if (valid === 'email') {
+                        if (!v.match(/^([a-zA-Z0-9_-])+@([a-zA-Z0-9_-])+(.[a-zA-Z0-9_-])+/)) {
+                            validArr.push(name);
+                            self.onValidRefuse(dom, self.emailWarning);
+                        }
+                        else {
+                            self.onValidPass(dom, self.successTips); 
+                        }
+                    }
+                    else if (valid === 'mobile') {
+                        if (!v.match(/^1[3|4|5|8][0-9]\d{4,8}$/)) {
+                            validArr.push(name);
+                            self.onValidRefuse(dom, self.mobileWarning);
+                        }
+                        else {
+                            self.onValidPass(dom, self.successTips); 
+                        }
+                    }
+                    else if (valid === 'url') {
+                        if (!v.match(/((http|ftp|https|file):\/\/([\w\-]+\.)+[\w\-]+(\/[\w\u4e00-\u9fa5\-\.\/?\@\%\!\&=\+\~\:\#\;\,]*)?)/)) {
+                            validArr.push(name);
+                            self.onValidRefuse(dom, self.urlWarning);
+                        }
+                        else {
+                            self.onValidPass(dom, self.successTips); 
+                        }
+                    }
+                    else if (valid === 'present') {
+                        v = v.replace(' ', '');
+                        if (!v.length) {
+                            validArr.push(name);
+                            self.onValidRefuse(dom, self.presentWarning);
+                        }
+                        else {
+                            self.onValidPass(dom, self.successTips);
+                        }
+                    }
+                    else if (valid.match(/^\/\S+\/$/)) {
+                        valid = valid.replace(/^\//, '');
+                        valid = valid.replace(/\/$/, '');
+                        var reg = new RegExp(valid);
+                        if (reg.test(v)) {
+                            self.onValidPass(dom, self.successTips); 
+                        }
+                        else {
+                            validArr.push(name);
+                            self.onValidRefuse(dom, self.regWarning);
+                        }
+                    }
+                }
+                else if (name && max) {
+                    var max = parseInt(max, 10);
+                    if (v.length > max) {
+                        validArr.push(name);
+                        self.onValidRefuse(dom, self.maxWarning(max));
+                    }
+                    else {
+                        self.onValidPass(dom, self.successTips);
+                    }
+                }
+                else if (name && min) {
+                    var min = parseInt(min, 10);
+                    if (v.length < min) {
+                        validArr.push(name);
+                        self.onValidRefuse(dom, self.minWarning(min));
+                    }
+                    else {
+                        self.onValidPass(dom, self.successTips);
+                    }
+                }
             }
         }
-
-        config.beforeSubmit && config.beforeSubmit(validArr);
         
         if (!validArr.length) {
-            if (config.normalSubmit) {
-                self.root.firstChild.setAttribute('action', action);
+            e.preventDefault();
+            if (config.normalSubmit) { 
+                self.root.firstChild.setAttribute('action', self.root.getAttribute('action'));
                 return true;
             }
             else {
-                e.preventDefault();
                 self.ajaxSubmit(elems, url);
             }
         }
@@ -2657,159 +2027,6 @@ riot.tag('super-form', '<form onsubmit="{ submit }" > <yield> </form>', function
             return false;
         }
     }.bind(this);
-
-    
-    function doCheck(validArr, elem) {
-        var valid = elem.getAttribute('valid');
-        var customValid = elem.getAttribute('customValid');
-        var max = parseInt(elem.getAttribute('max'), 10);
-        var min = parseInt(elem.getAttribute('min'), 10);
-        var type = elem.getAttribute('type');
-        var allowEmpty = elem.getAttribute('allowEmpty');
-        var v = elem.value; 
-        var name = elem.name;
-        var dom = elem;
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-        if (
-            allowEmpty === null
-            && isNaN(max)
-            && isNaN(min)
-            && valid === null
-            && customValid === null
-        ) {
-            return;
-        }
-        if (allowEmpty && (v === '' || typeof v !== 'string')) {
-            self.onValidPass(dom, self.successTips);
-            return;
-        }
-        if (name && valid) {
-            if (valid === 'email') {
-                if (!v.match(/^([a-zA-Z0-9_-])+@([a-zA-Z0-9_-])+(.[a-zA-Z0-9_-])+/)) {
-                    validArr.push(name);
-                    self.onValidRefuse(dom, self.emailWarning);
-                }
-                else {
-                    self.onValidPass(dom, self.successTips); 
-                }
-            }
-            else if (valid === 'mobile') {
-                if (!v.match(/^1[3|4|5|8][0-9]\d{4,8}$/)) {
-                    validArr.push(name);
-                    self.onValidRefuse(dom, self.mobileWarning);
-                }
-                else {
-                    self.onValidPass(dom, self.successTips); 
-                }
-            }
-            else if (valid === 'url') {
-                if (!v.match(/((http|ftp|https|file):\/\/([\w\-]+\.)+[\w\-]+(\/[\w\u4e00-\u9fa5\-\.\/?\@\%\!\&=\+\~\:\#\;\,]*)?)/)) {
-                    validArr.push(name);
-                    self.onValidRefuse(dom, self.urlWarning);
-                }
-                else {
-                    self.onValidPass(dom, self.successTips); 
-                }
-            }
-            else if (valid === 'present') {
-                v = v.replace(' ', '');
-                if (!v.length) {
-                    validArr.push(name);
-                    self.onValidRefuse(dom, self.presentWarning);
-                }
-
-
-
-
-
-
-                else {
-
-                    comparator('string').handler(min, max, dom, v, validArr, name);
-                }
-            }
-            else if (valid.match(/^\/\S+\/$/)) {
-                valid = valid.replace(/^\//, '');
-                valid = valid.replace(/\/$/, '');
-                var reg = new RegExp(valid);
-                if (reg.test(v)) {
-
-                    comparator('string').handler(min, max, dom, v, validArr, name);
-                }
-                else {
-                    validArr.push(name);
-                    self.onValidRefuse(dom, self.regWarning);
-                }
-            }
-            else if (NUMBER_REGEXP[valid.toUpperCase()]) {
-                var reg = NUMBER_REGEXP[valid.toUpperCase()];
-                if (reg.test(v)) {
-                    comparator('number').handler(min, max, dom, v, validArr, name);
-                }
-                else {
-                    validArr.push(name);
-                    self.onValidRefuse(dom, self.numWarning);
-                }
-            }
-        }
-
-
-
-
-
-
-        else if (name && !valid) {
-            if (customValid) {
-                if (window[customValid]) {
-                    var reg = window[customValid].regExp;
-                    var tips = window[customValid].message || self.regWarning;
-                    if (reg && reg.test(v)) {
-
-                        comparator('string').handler(min, max, dom, v, validArr, name); 
-                    }
-                    else {
-                        validArr.push(name);
-                        self.onValidRefuse(dom, tips);
-                    }
-                }
-            }
-            else {
-                comparator('string').handler(min, max, dom, v, validArr, name);
-            }
-                    
-        }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-    }
 
 
 });
@@ -2835,7 +2052,7 @@ riot.tag('tab', '<ul> <li each="{ data }" onclick="{ parent.toggle }" class="{ a
     }.bind(this);
 
 });
-riot.tag('table-view', '<yield> <table class="{ config.class }"> <tr show="{ showHeader }"> <th each="{ cols }" riot-style="{ style }" hide="{ hide }">{ alias || name }</th> </tr> <tr each="{ row in rows }" > <td each="{ colkey, colval in parent.cols }" class="{ newline: parent.parent.config.newline, cut: parent.parent.config.cut }" title="{ parent.row[colkey.name] }" hide="{ colkey.hide }"> { parent.parent.drawcell(parent.row, this, colkey) } </td> </tr> </table>', function(opts) {
+riot.tag('table-view', '<yield> <table class="{ config.class }"> <tr show="{ showHeader }"> <th each="{ cols }" riot-style="{ style }">{ alias || name }</th> </tr> <tr each="{ row in rows }" > <td each="{ colkey, colval in parent.cols }" class="{ newline: parent.parent.config.newline, cut: parent.parent.config.cut }" title="{ parent.row[colkey.name] }"> { parent.parent.drawcell(parent.row, this, colkey) } </td> </tr> </table>', function(opts) {
 
     var self = this;
     var EL = self.root;
@@ -2862,14 +2079,11 @@ riot.tag('table-view', '<yield> <table class="{ config.class }"> <tr show="{ sho
                     }
 
                     var col = {
+                        name: child.attributes['name'].value,
                         inner: child.innerHTML,
                         style: col_style,
-                        index: i,
-                        attrs: child.attributes,
-                        hide: false
+                        index: i
                     }
-
-                    col.name = child.attributes['name'] ? child.attributes['name'].value : '';
                     if (child.attributes['alias']) {
                         col.alias = child.attributes['alias'].value || ''
                     }
@@ -2976,102 +2190,17 @@ riot.tag('table-view', '<yield> <table class="{ config.class }"> <tr show="{ sho
         return EL;
     }
 
-    EL.hide = function(keyName) {
-        for(i = 0; i < self.cols.length; i++) {
-            if (self.cols[i].name === keyName) {
-                self.cols[i].hide = true
-                break
-            }
-        }
-        self.update();
-    }
-
-    EL.show = function(keyName) {
-        for(i = 0; i < self.cols.length; i++) {
-            if (self.cols[i].name === keyName) {
-                self.cols[i].hide = false
-                break
-            }
-        }
-        self.update();
-    }
-    
-    self.findNodes = function(node, tag) {
-        for(var i = 0;i < node.attributes.length; i++){
-            var attrName = node.attributes[i]['name'];
-            var attrValue = node.attributes[i]['value'];
-            if (attrName === 'if' || attrName === 'show' || attrName === 'hide') {
-                node.removeAttribute(attrName);
-                var judgeValue = riot.util.tmpl(attrValue, tag);
-                if (attrName == 'hide') judgeValue = !judgeValue;
-                node.style.display = judgeValue ? '' : 'none';
-            }
-            if (attrName === 'each') {
-                node.removeAttribute(attrName);
-                var arr = riot.util.tmpl(attrValue, tag);
-                var root = node.parentNode;
-                if (arr && utils.isArray(arr)) {
-                    var placeholder = document.createComment('riot placeholder');
-                    var frag = document.createDocumentFragment();
-
-                    root.insertBefore(placeholder, node);
-                    for (i = 0; i < arr.length; i++) {
-                        var tmp = document.createElement('tmp');
-                        tmp.innerHTML = riot.util.tmpl(node.outerHTML, arr[i]);
-                        frag.appendChild(tmp.firstChild);
-                    }
-
-                    root.removeChild(node);
-                    root.insertBefore(frag, placeholder);
-                }
-                
-            } 
-        }
-        if (node.hasChildNodes()) {
-            var children = node.children;
-            for (var i = 0; i < children.length; i++) {  
-                var child = children.item(i);
-                self.findNodes(child, tag);  
-            }  
-        }
-        
-    }
-
-    this.drawcell = function(rowdata, td, col) {
-        if (col.attrs.length) {
-            for (i in col.attrs) {
-                if (typeof col.attrs[i] !== 'function') {
-                    if (col.attrs[i]['name'] && col.attrs[i]['name']!=='class') {
-                        td.root.setAttribute(col.attrs[i]['name'], col.attrs[i]['value']);
-                    }
-                    else if (col.attrs[i]['name'] && col.attrs[i]['name']=='class') {
-                        utils.addClass(td.root, col.attrs[i]['value']);
-                    }
-                }
-            }
-        } //将rcol的属性挪到td上，class需特殊处理，name和alias不动
-        
+    this.drawcell = function(rowdata, tr,  col) {
         if(col.inner){
-            var str = col.inner.replace(/&lt;%=/g, '{')
-                               .replace(/%&gt;/g, '}')
-                               .replace(/%>/g, '}')
-                               .replace(/<%=/g, '{');
-            for (i in iToolkit.tableExtend) {
-                if (typeof iToolkit.tableExtend[i] === 'function') {
-                    rowdata[i] = iToolkit.tableExtend[i].bind(rowdata);
-                }
-                else {
-                    rowdata[i] = iToolkit.tableExtend[i]
-                }
-            }
-
-            for (i in rowdata) {
-                td[i] = rowdata[i];
-            }
-            
-            td.root.innerHTML = str;
-            self.findNodes(td.root, td);
-            td.root.innerHTML = riot.util.tmpl(td.root.innerHTML, rowdata)
+            setTimeout(function() {
+                var str = col.inner.replace(/&lt;%=[\s|\w]+%&gt;/g, function(v) {
+                    var key = v.replace(/&lt;%=/g, '')
+                               .replace(/\s/g, '')
+                               .replace(/%&gt;/g, '');
+                    return rowdata[key];
+                });
+                tr.root.children[col.index].innerHTML = str;
+            }, 10);
         }
         else{
             return rowdata[col.name];
@@ -3080,14 +2209,10 @@ riot.tag('table-view', '<yield> <table class="{ config.class }"> <tr show="{ sho
 
 
 });
-riot.tag('tree', '<div class="tree-item-wrap" each="{ data }" onselectstart="return false" ondragstart="return false"> <input type="checkbox" onchange="{ parent.checkHandle }" if="{ parent.rootConfig.showCheck }"> <i class="{ tree-item-arrow: true, open: opened, empty: !children }" onclick="{ parent.toggle }"></i> <i class="{tree-item-icon:true,empty: !children}" onclick="{ parent.toggle }"></i> <div onclick="{ parent.leftClick }" class="{ tree-item-name : true }" title="{ name }">{ name }</div>  <ul class="tree-child-wrap" if="{ children }"> <tree data="{ children }" if="{ children }"></tree> </ul> </div>', function(opts) {
+riot.tag('tree', '<div class="tree-item-wrap" each="{ data }"> <i class="{ tree-item-arrow: true, open: opened, empty: !children }" onclick="{ parent.toggle }"></i> <i class="tree-item-icon"></i> <div onclick="{ parent.leftClick }" class="{ tree-item-name : true }" title="{ name }">{ name }</div>  <ul class="tree-child-wrap" if="{ children }"> <tree data="{ children }" if="{ children }"></tree> </ul> </div>', function(opts) {
 
     var self = this;
     self.config = self.opts.opts || self.opts;
-
-    this.cssicon=function(){
-        return "tree-item-icon";
-    }.bind(this);
 
     
     self.dataHandle = function(data, idName, pidName) {
@@ -3109,8 +2234,6 @@ riot.tag('tree', '<div class="tree-item-wrap" each="{ data }" onselectstart="ret
             if (parent) {
                 if (!parent.children) {
                     parent.children = [];
-                  // 这里要显示和控制文件夹图标
-                    // alert(JSON.stringify(parent));
                 }
                 parent.children.push(node);
             }
@@ -3140,44 +2263,20 @@ riot.tag('tree', '<div class="tree-item-wrap" each="{ data }" onselectstart="ret
     
     
     this.leftClick = function(e) {
-
-      if (e.item.opened === true) {
-        e.item.opened = false;
-      }
-      else {
-        e.item.opened = true;
-      }
-
         var leftClick = self.rootConfig.onLeftClick;
         if (leftClick) {
             leftClick(e.item, e.target);
-           // alert(e.target);
         }
     }.bind(this);
-
-    
-    this.checkHandle = function(e) {
-        var checkItem = self.rootConfig.onCheck;
-        var uncheckItem = self.rootConfig.onUnCheck;
-        if (checkItem && e.target.checked) {
-            checkItem(e.item, e.target);
-        }
-        if (uncheckItem && !e.target.checked) {
-            uncheckItem(e.item, e.target);
-        }
-    }.bind(this);
-
     
     
     this.toggle = function(e) {
-
         if (e.item.opened === true) {
             e.item.opened = false;
         }
         else {
             e.item.opened = true;
         }
-
     }.bind(this);
 
 });
