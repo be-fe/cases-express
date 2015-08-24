@@ -1,1 +1,3 @@
-promise.md
+ function() {
+        alert('11111')
+ }

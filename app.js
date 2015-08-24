@@ -9,6 +9,8 @@ var bodyHandle = require('./bodyHandle');
 app.use(express.static('public'));
 
 var fileList = [];
+
+//
 function walk(path){    
     var dirList = fs.readdirSync(path);
 
