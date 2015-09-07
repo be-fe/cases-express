@@ -1,0 +1,19 @@
+<!-- 有时移动端会要求绘制小于1px的描边或者分隔线 -->
+<!-- 目前采用的方案是使用box-shadow模拟，多次渲染以保证清晰度 -->
+<style>
+    div {
+        height: 100px;
+        width: 150px;
+        margin: 20px;
+    }
+
+    #shadow-border {
+        -webkit-box-shadow:0 0 1px -1px rgba(255, 0, 0, 0.5), 0 0 1px -1px rgba(255, 0, 0, 0.5), 0 0 1px -1px rgba(255, 0, 0, 0.5);
+    }
+</style>
+
+<div id="shadow-border">
+    
+</div>
+
+<a href="http://efe.baidu.com/blog/1px-on-retina/" target="_blank">efe相关文章</a>

@@ -1,0 +1,35 @@
+<style>
+    div {
+        height: 80px;
+        width: 120px;
+        margin: 20px;
+        border: 1px solid #333333;
+    }
+    
+    /*
+     * 色值可以放最前或最后, 数值参数按顺序分别代表：x-offset, y-offset, blur(模糊程度), spread(阴影尺寸)
+     * spread可以不写，默认为0 阴影尺寸等于元素尺寸.
+     * 可以添加inset设置内阴影
+     */
+    
+    #box-shadow1 {
+        box-shadow: 2px 2px 10px -2px red;
+    }
+
+    #box-shadow2 {
+        box-shadow: red 1px 1px 1px 0;
+    }
+
+    #box-shadow3 {
+        box-shadow: 2px 2px 10px 0 red inset;
+    }
+
+    #box-shadow4 {
+        box-shadow: 0px 0px 20px 2px red;
+    }
+</style>
+
+<div id="box-shadow1"></div>
+<div id="box-shadow2"></div>
+<div id="box-shadow3"></div>
+<div id="box-shadow4"></div>

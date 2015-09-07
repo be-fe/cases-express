@@ -1,0 +1,26 @@
+<style>
+    html, svg {
+        width: 100%;
+        height: 100%;
+    }
+
+    polyline {
+        stroke: #333333;
+        stroke-width: 2px;
+    }
+
+    #polyline1 {
+        fill: none;
+    }
+
+    #polyline3 {
+        fill: none;
+    }
+
+</style>
+<svg>
+    <polyline id="polyline1" points="20,20 20,50 50,50 50,80 80,80 80,110"/>
+    <polyline id="polyline2" points="120,20 120,50 150,50 150,80 180,80 180,110"/>
+    <polyline id="polyline3" points="20,200 120,200 30,260 70,160 110,260 20,200"/>
+    <!-- 坐标点是根据顺序进行连线，因此可以很容易的构造出五角星这样的图形 -->
+</svg>

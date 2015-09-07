@@ -1,0 +1,32 @@
+<style>
+    #line-1{
+        stroke: #333333;    /*定制线段色彩*/
+        stroke-width: 2px;  /*定制线段宽度*/
+    }
+    
+    #line-2{
+        stroke: red;
+        stroke-width: 5px;
+        stroke-linecap: round; /*定制线段结尾样式*/
+    }
+
+    #line-3 {
+        stroke: green;
+        stroke-width: 2px;
+        stroke-dasharray: 10,4; /*定制虚线样式*/
+    }
+
+    #line-4 {
+        stroke: blue;
+        stroke-width: 2px;
+        stroke-dasharray: 20,10,5,5,5,10;
+    }
+    
+</style>
+<svg>
+    <!-- x1,y1是起点坐标, x2,y2是终点坐标 -->
+    <line id="line-1" x1="0" y1="20" x2="200" y2="20"/>
+    <line id="line-2" x1="0" y1="40" x2="200" y2="40"/>
+    <line id="line-3" x1="0" y1="60" x2="200" y2="60"/>
+    <line id="line-4" x1="0" y1="80" x2="200" y2="80"/>
+</svg>

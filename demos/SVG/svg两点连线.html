@@ -1,0 +1,66 @@
+<style>
+    html, svg {
+        width: 100%;
+        height: 100%;
+        cursor: default;
+    }
+
+    #link-line {
+        stroke:rgb(99,99,99);
+        stroke-width: 2;
+        stroke-dasharray: 8,3;
+        display: none;
+    }
+
+    .point {
+        height: 19px;
+        width: 19px;
+        position: absolute;
+        border-radius: 50%;
+        border: 1px solid #333333;
+        cursor: pointer;
+    }
+</style>
+<div>
+    <div class="point" style="top: 8px; left: 8px" ondragstart="return false"></div>
+    <div class="point" style="top: 100px; left: 8px" ondragstart="return false"></div>
+    <div class="point" style="top: 100px; left: 100px" ondragstart="return false"></div>
+    <div class="point" style="top: 8px; left: 100px" ondragstart="return false"></div>
+    <svg>
+        <line id="link-line"/>
+    </svg>
+</div>
+
+<script>
+    (function() {
+        var line = document.getElementById('link-line');
+
+        document.onmousedown = function(e) {
+            if (e.target.className === 'point') {
+                var beginDom = e.target
+                line.style.display = 'block';
+                line.setAttribute('x1', beginDom.offsetLeft + 3);
+                line.setAttribute('y1', beginDom.offsetTop + 3);
+                line.setAttribute('x2', beginDom.offsetLeft + 3);
+                line.setAttribute('y2', beginDom.offsetTop + 3);
+            }
+            document.onmousemove = function(e) {
+                line.setAttribute('x2', e.clientX);
+                line.setAttribute('y2', e.clientY);
+            }
+        }
+
+        
+        document.onmouseup = function(e) {
+            if (e.target.className !== 'point') {
+                line.style.display = 'none';
+            }
+            else {
+                var endDom = e.target
+                line.setAttribute('x2', endDom.offsetLeft  + 3);
+                line.setAttribute('y2', endDom.offsetTop  + 3);
+            }
+            document.onmousemove = null;
+        }
+    })();
+</script>

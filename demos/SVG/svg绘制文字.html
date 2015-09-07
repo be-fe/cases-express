@@ -1,0 +1,58 @@
+<!-- SVG可以制作一些特殊效果的文字，例如镂空、渐变、按路径排列等 -->
+<style>
+    html, svg {
+        height: 100%;
+        width: 100%;
+    }
+
+    svg text{
+        display: block;
+    }
+    
+    /*
+     * 可以通过属性和CSS样式来进行控制
+     */
+    
+    svg #stroke {
+        font-size: 72; 
+        font-weight: bold; 
+        stroke: #333333;
+        fill: none;
+    }
+
+    svg #tsapn {
+        font-size: 30; 
+        font-weight: normal; 
+        stroke: #333333;
+        fill: none;
+    }
+
+    svg #tsapn tspan {
+        font-weight: bold;
+        font-style: italic;
+        stroke: none;
+        fill: #333333;
+    }
+
+    svg #gradient {
+        font-size: 72;
+        font-weight: bold;
+        fill: url(#textgradient);
+        stroke: none;
+    }
+    
+</style>
+<svg>
+    <text id="stroke" x="0" y="80">Stroke</text>
+    <text id="tsapn" x="10" y="130">
+        That's a <tspan>Greate</tspan> idea!
+    </text>
+
+    <defs>  
+        <linearGradient id="textgradient" x1="0%" x2="0%" y1="0%" y2="100%">  
+            <stop stop-color="#999" offset="0%"/>  
+            <stop stop-color="#111" offset="100%"/>  
+        </linearGradient>
+    </defs>
+    <text id="gradient" x="0" y="210">Gradient</text>  
+</svg>
